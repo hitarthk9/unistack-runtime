@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unistack-runtime"
+version = "0.1.0"
+description = "HTTP graph-runtime for UniStack: start activities, resolve HITL pauses"
+requires-python = ">=3.10"
+
+dependencies = [
+    "unistack>=0.3",             # the LangGraph library this service drives
+    "unistack-auth>=0.1",        # OIDC/JWT verification
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+unistack = "unistack_runtime.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["unistack_runtime*"]
