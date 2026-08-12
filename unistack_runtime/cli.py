@@ -116,7 +116,10 @@ def _serve(args) -> None:
     try:
         uvicorn.run(create_app(sdk, graph, auth=auth), host=args.host, port=args.port)
     finally:
-        sdk.close()      # flush buffered spans (BatchSpanProcessor) on shutdown
+        # Span flushing happens in create_app's lifespan shutdown hook, NOT here: on SIGTERM
+        # uvicorn exits without returning, so this block never runs. Kept for the non-signal
+        # exit paths (a bind failure, Ctrl-C in some terminals); close() is idempotent.
+        sdk.close()
 
 
 def main() -> None:

@@ -185,3 +185,27 @@ def test_resolve_unknown_activity_404():
     r = c.post("/activities/srv-19990101T000000000000-dead/resolve",
                json={"decision": "approve"}, headers=AUTH)
     assert r.status_code == 404
+
+
+# ── Shutdown flushes telemetry ─────────────────────────────────────────────────
+
+def test_shutdown_closes_the_sdk_so_buffered_spans_flush():
+    """
+    Regression: this used to live in a `finally:` around uvicorn.run(), which never runs on
+    SIGTERM — uvicorn exits the process without returning. Every span still sitting in the
+    BatchSpanProcessor was silently lost on each deploy, restart and scale-down. It has to be
+    a lifespan hook, which uvicorn does run.
+    """
+    class FakeSDK:
+        _workflow = "srv"
+        closed = 0
+
+        def close(self):
+            FakeSDK.closed += 1
+
+    app = create_app(FakeSDK(), "graph",
+                     auth=AuthConfig.static_token(token=TOKEN, scopes=BOTH_SCOPES))
+    with TestClient(app) as c:                      # entering/exiting runs the lifespan
+        assert c.get("/health").status_code == 200
+        assert FakeSDK.closed == 0                  # not before shutdown
+    assert FakeSDK.closed == 1                      # flushed exactly once on shutdown

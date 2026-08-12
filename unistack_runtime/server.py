@@ -15,6 +15,7 @@ guardrail breaches. The approver is derived from the verified token, never from 
 body, so the audit record cannot be forged by a caller.
 """
 
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -88,7 +89,17 @@ def _requires(verifier, scope: str):
 
 def create_app(sdk, graph, *, auth: AuthConfig) -> FastAPI:
     """A thin FastAPI hosting one compiled graph: start + resolve, nothing else."""
-    app = FastAPI(title="UniStack graph-runtime", version="0.3.0")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        # Flush buffered spans on shutdown. This MUST be a lifespan hook, not a
+        # `finally:` around uvicorn.run(): on SIGTERM uvicorn exits the process without
+        # returning, so the finally never executes and every span still sitting in the
+        # BatchSpanProcessor is silently lost — on every deploy, restart and scale-down.
+        sdk.close()
+
+    app = FastAPI(title="UniStack graph-runtime", version="0.3.0", lifespan=lifespan)
 
     verifier = make_verifier(auth)          # holds the JWKS client — built once, not per request
     require_start = _requires(verifier, SCOPE_START)
@@ -101,9 +112,10 @@ def create_app(sdk, graph, *, auth: AuthConfig) -> FastAPI:
     @app.post("/activities", status_code=201)
     def start_activity(body: StartRequest,
                        principal: Annotated[Principal, Depends(require_start)]):
-        # The caller's identity is verified and scope-checked, but not persisted here:
-        # `started_by` belongs on the activity record (BUILD_PLAN.md item 3), not on a pause.
-        return _result(sdk.start(graph, body.initial_state, body.run_id))
+        # The starter's verified identity goes onto the activity record, where a later
+        # --deny-self-approval check can compare it against whoever resolves the pause.
+        return _result(sdk.start(graph, body.initial_state, body.run_id,
+                                 started_by=_resolver(principal)))
 
     @app.post("/activities/{activity_id}/resolve")
     def resolve_activity(activity_id: str, body: ResolveRequest,
