@@ -34,7 +34,7 @@ def _load_builder_and_config(spec: str):
     returned as {} (fully backward compatible with builder-only modules).
     """
     if ":" not in spec:
-        sys.exit("builder must be 'module:attribute', e.g. demo.agent:builder")
+        sys.exit("builder must be 'module:attribute', e.g. agent:builder")
     module_path, attr = spec.split(":", 1)
     module = importlib.import_module(module_path)
     builder = getattr(module, attr)
@@ -48,7 +48,8 @@ def _load_knowledge_bases(spec: str) -> dict:
 
     The CLI does this, not the SDK: the SDK reads no environment and loads no files
     (hard constraint #9), so it takes parsed data. Keeping the YAML next to the agent is the
-    same reasoning as demo/langfuse/ — a knowledge base encodes THIS agent's business policy,
+    same reasoning as the agent's langfuse/ folder — a knowledge base encodes THIS agent's
+    business policy,
     so it belongs in the same commit as the agent it governs.
 
     A knowledge base that fails to parse EXITS rather than starting a runtime whose guards
