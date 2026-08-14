@@ -227,3 +227,90 @@ def test_serve_refuses_to_boot_without_complete_auth_config(monkeypatch, auth_ar
     with pytest.raises(SystemExit):
         _run_serve_argv(["fake_agent_no_config:builder", "--workflow", "content"],
                         monkeypatch, uvicorn, auth_argv=auth_argv)
+
+
+# ── knowledge bases ────────────────────────────────────────────────────────────
+
+def _install_module_on_disk(tmp_path, name, knowledge: dict[str, str], **attrs):
+    """A fake agent module with a real __file__, so knowledge/*.yaml beside it is discoverable."""
+    home = tmp_path / name
+    (home / "knowledge").mkdir(parents=True)
+    for filename, text in knowledge.items():
+        (home / "knowledge" / filename).write_text(text)
+    mod = _install_module(name, **attrs)
+    mod.__file__ = str(home / "agent.py")
+    return mod
+
+
+BRAND_YAML = """
+knowledge_base: brand-policy
+version: 1
+rules:
+  - id: BP-001
+    rule: No unverified medical claims.
+"""
+
+
+def test_serve_loads_knowledge_bases_from_beside_the_agent(monkeypatch, tmp_path):
+    import uvicorn
+    _install_module_on_disk(
+        tmp_path, "fake_agent_kb", {"brand-policy.yaml": BRAND_YAML}, builder="b",
+        UNISTACK_CONFIG={"workflow": "content",
+                         "guards": {"gen": {"knowledge_base": "brand-policy"}}})
+    captured = _run_serve_argv(["fake_agent_kb:builder"], monkeypatch, uvicorn)
+
+    # Parsed by the CLI and handed to the SDK as data — the SDK loads no files itself.
+    bases = captured["init_kwargs"]["knowledge_bases"]
+    assert list(bases) == ["brand-policy"]
+    assert bases["brand-policy"]["rules"][0]["id"] == "BP-001"
+
+
+def test_serve_without_a_knowledge_dir_passes_nothing(monkeypatch):
+    """Backward compatible: an agent with no knowledge/ directory is not an error."""
+    import uvicorn
+    _install_module("fake_agent_no_config", builder="b")
+    captured = _run_serve_argv(["fake_agent_no_config:builder", "--workflow", "content"],
+                               monkeypatch, uvicorn)
+    assert captured["init_kwargs"]["knowledge_bases"] == {}
+
+
+def test_serve_exits_on_an_unparseable_knowledge_base(monkeypatch, tmp_path):
+    """Better to refuse to boot than to serve guards judging against a partial policy."""
+    import uvicorn
+    _install_module_on_disk(tmp_path, "fake_agent_bad_kb", {"broken.yaml": "rules: [oops\n"},
+                            builder="b", UNISTACK_CONFIG={"workflow": "content"})
+    with pytest.raises(SystemExit, match="cannot parse knowledge base"):
+        _run_serve_argv(["fake_agent_bad_kb:builder"], monkeypatch, uvicorn)
+
+
+def test_serve_exits_on_a_knowledge_base_with_no_name(monkeypatch, tmp_path):
+    import uvicorn
+    _install_module_on_disk(tmp_path, "fake_agent_unnamed_kb", {"unnamed.yaml": "rules: []\n"},
+                            builder="b", UNISTACK_CONFIG={"workflow": "content"})
+    with pytest.raises(SystemExit, match="no 'knowledge_base' name"):
+        _run_serve_argv(["fake_agent_unnamed_kb:builder"], monkeypatch, uvicorn)
+
+
+def test_guard_flag_refuses_to_clobber_a_knowledge_base_guard(monkeypatch):
+    """
+    `--guard NODE=POLICY` can only express prose. Silently overwriting a knowledge-base guard
+    would drop the entire policy and leave a guard that looks configured but judges against one
+    sentence — the one failure mode of this feature that nothing downstream could detect.
+    """
+    import uvicorn
+    _install_module("fake_agent_with_config", builder="b",
+                    UNISTACK_CONFIG={"workflow": "content",
+                                     "guards": {"gen": {"knowledge_base": "brand-policy"}}})
+    with pytest.raises(SystemExit, match="would replace a knowledge-base guard"):
+        _run_serve_argv(["fake_agent_with_config:builder", "--guard", "gen=just this"],
+                        monkeypatch, uvicorn)
+
+
+def test_guard_flag_still_overrides_a_string_guard(monkeypatch):
+    """The refusal above is narrow: overriding prose with prose is unchanged."""
+    import uvicorn
+    _install_module("fake_agent_with_config", builder="b",
+                    UNISTACK_CONFIG={"workflow": "content", "guards": {"gen": "old"}})
+    captured = _run_serve_argv(["fake_agent_with_config:builder", "--guard", "gen=new"],
+                               monkeypatch, uvicorn)
+    assert captured["guards"] == {"gen": "new"}

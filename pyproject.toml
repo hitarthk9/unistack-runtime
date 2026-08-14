@@ -13,6 +13,7 @@ dependencies = [
     "unistack-auth>=0.1",        # OIDC/JWT verification
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "pyyaml>=6",                 # loads the agent's knowledge/*.yaml; the SDK reads no files
 ]
 
 [project.optional-dependencies]

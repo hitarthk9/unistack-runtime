@@ -23,6 +23,7 @@ on top of `UNISTACK_CONFIG` for one-off overrides without a redeploy.
 import argparse
 import importlib
 import os
+import pathlib
 import sys
 
 
@@ -39,6 +40,42 @@ def _load_builder_and_config(spec: str):
     builder = getattr(module, attr)
     config = getattr(module, "UNISTACK_CONFIG", {})
     return builder, config
+
+
+def _load_knowledge_bases(spec: str) -> dict:
+    """
+    Load `knowledge/*.yaml` from beside the agent module — the policy a guard names.
+
+    The CLI does this, not the SDK: the SDK reads no environment and loads no files
+    (hard constraint #9), so it takes parsed data. Keeping the YAML next to the agent is the
+    same reasoning as demo/langfuse/ — a knowledge base encodes THIS agent's business policy,
+    so it belongs in the same commit as the agent it governs.
+
+    A knowledge base that fails to parse EXITS rather than starting a runtime whose guards
+    would silently judge against a partial policy.
+    """
+    module = importlib.import_module(spec.split(":", 1)[0])
+    # A module with no __file__ (namespace package, or one built in memory) has no directory to
+    # look beside — that is "no knowledge bases", not an error.
+    origin = getattr(module, "__file__", None)
+    if not origin:
+        return {}
+    directory = pathlib.Path(origin).parent / "knowledge"
+    if not directory.is_dir():
+        return {}
+
+    import yaml
+    bases = {}
+    for path in sorted(directory.glob("*.yaml")):
+        try:
+            doc = yaml.safe_load(path.read_text())
+        except Exception as exc:
+            sys.exit(f"[UniStack] cannot parse knowledge base {path}: {exc}")
+        name = (doc or {}).get("knowledge_base")
+        if not name:
+            sys.exit(f"[UniStack] {path} has no 'knowledge_base' name")
+        bases[name] = doc
+    return bases
 
 
 def _build_auth(args, AuthConfig):
@@ -73,6 +110,7 @@ def _serve(args) -> None:
     # Resolve auth first: a misconfiguration should exit before any Mongo/LLM setup work.
     auth = _build_auth(args, AuthConfig)
     builder, config = _load_builder_and_config(args.builder)
+    knowledge_bases = _load_knowledge_bases(args.builder)
 
     workflow = args.workflow or config.get("workflow")
     if not workflow:
@@ -80,7 +118,16 @@ def _serve(args) -> None:
                  "UNISTACK_CONFIG")
 
     guards = dict(config.get("guards") or {})
-    guards.update(g.split("=", 1) for g in (args.guard or []))   # CLI wins per-key
+    for flag in (args.guard or []):
+        node, _, policy = flag.partition("=")
+        # `--guard NODE=POLICY` can only ever express prose. Letting it overwrite a guard that
+        # names a knowledge base would silently drop the entire policy and leave a guard that
+        # looks configured but judges against one sentence — refuse instead.
+        if isinstance(guards.get(node), dict):
+            sys.exit(f"[UniStack] --guard {node}=... would replace a knowledge-base guard with "
+                     f"plain text, dropping its policy. Edit the agent's UNISTACK_CONFIG or its "
+                     f"knowledge/ files instead.")
+        guards[node] = policy
     reviews = sorted(set(config.get("reviews") or []) | set(args.review or []))
     context = args.context if args.context is not None else config.get("context")
 
@@ -99,6 +146,8 @@ def _serve(args) -> None:
         # endpoint exposes, e.g. "judge-fast".
         llm_base_url=os.environ.get("UNISTACK_LLM_BASE_URL") or None,
         llm_api_key=os.environ.get("UNISTACK_LLM_API_KEY") or None,
+        # Parsed here, never read by the SDK — see _load_knowledge_bases.
+        knowledge_bases=knowledge_bases,
         **({"guardrail_model": os.environ["UNISTACK_GUARDRAIL_MODEL"]}
            if os.environ.get("UNISTACK_GUARDRAIL_MODEL") else {}),
     )
@@ -110,8 +159,10 @@ def _serve(args) -> None:
                  if auth.mode == "oidc" else
                  f"auth=token (LOCAL DEV ONLY — identity is NOT verified; every resolution "
                  f"is attributed to '{auth.identity}') scopes={sorted(auth.token_scopes)}")
+    kb_line = f" knowledge={sorted(knowledge_bases)}" if knowledge_bases else ""
     print(f"[UniStack] serving '{workflow}' from {args.builder} (guards={list(guards)}, "
-          f"reviews={reviews}) on {args.host}:{args.port}\n[UniStack] {auth_line}", flush=True)
+          f"reviews={reviews}{kb_line}) on {args.host}:{args.port}\n[UniStack] {auth_line}",
+          flush=True)
 
     try:
         uvicorn.run(create_app(sdk, graph, auth=auth), host=args.host, port=args.port)

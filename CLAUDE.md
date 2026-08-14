@@ -62,6 +62,20 @@ a verified approver from a dev-mode attribution.
 deploy command carries no policy text. That dict is **plain data** — the author's module still
 imports nothing from UniStack. CLI flags merge on top for one-off overrides.
 
+### Knowledge bases
+
+It also loads every `knowledge/*.yaml` sitting beside that module and passes the parsed dicts to
+`UniStack.init(knowledge_bases=...)`, so a guard can name one:
+`guards={"generate": {"knowledge_base": "brand-policy"}}`. **This CLI is the only file loader** —
+the SDK reads no files (its hard constraint #9), so it takes data. A base that fails to parse, or
+carries no `knowledge_base` name, **exits** rather than serving guards that would judge against a
+partial policy.
+
+⚠️ `--guard NODE=POLICY` can only ever express prose, so pointing it at a node whose config has a
+knowledge-base guard would silently downgrade that guard to one sentence — a guard that still
+looks configured. The merge **refuses** in that case instead of overwriting. Overriding a plain
+string guard with another string is unchanged.
+
 ## Environment variables
 
 | Var | Purpose |
@@ -73,6 +87,8 @@ imports nothing from UniStack. CLI flags merge on top for one-off overrides.
 | `UNISTACK_LLM_BASE_URL` / `UNISTACK_LLM_API_KEY` / `UNISTACK_GUARDRAIL_MODEL` | the guardrail judge's gateway (see `unistack-gateway`) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` / `_HEADERS` / `OTEL_SERVICE_NAME` | tracing |
 | `ANTHROPIC_API_KEY` | legacy; the judge now goes through the gateway |
+
+Knowledge bases are **not** an env var — they are files next to the agent, discovered by path.
 
 The SDK reads none of these — this CLI reads them and passes them in explicitly.
 
