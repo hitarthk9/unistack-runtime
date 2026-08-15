@@ -21,6 +21,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from unistack_runtime.entity import resolve as resolve_entity_key
 from unistack_auth import (
     SCOPE_RESOLVE,
     SCOPE_START,
@@ -87,7 +88,8 @@ def _requires(verifier, scope: str):
     return dependency
 
 
-def create_app(sdk, graph, *, auth: AuthConfig) -> FastAPI:
+def create_app(sdk, graph, *, auth: AuthConfig,
+               entity_key_template: str | None = None) -> FastAPI:
     """A thin FastAPI hosting one compiled graph: start + resolve, nothing else."""
 
     @asynccontextmanager
@@ -114,8 +116,14 @@ def create_app(sdk, graph, *, auth: AuthConfig) -> FastAPI:
                        principal: Annotated[Principal, Depends(require_start)]):
         # The starter's verified identity goes onto the activity record, where a later
         # --deny-self-approval check can compare it against whoever resolves the pause.
+        # `entity_key` says WHAT this run is about, rendered from the agent's own declaration
+        # against this request's state. It has to be captured here, at start: telemetry is
+        # fail-open, so deriving it from a trace later would make a rate's denominator depend on
+        # whether an export succeeded, and it cannot be backfilled once checkpoints are deleted.
         return _result(sdk.start(graph, body.initial_state, body.run_id,
-                                 started_by=_resolver(principal)))
+                                 started_by=_resolver(principal),
+                                 entity_key=resolve_entity_key(
+                                     entity_key_template, body.initial_state, sdk._workflow)))
 
     @app.post("/activities/{activity_id}/resolve")
     def resolve_activity(activity_id: str, body: ResolveRequest,

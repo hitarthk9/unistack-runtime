@@ -105,6 +105,8 @@ def _build_auth(args, AuthConfig):
 
 def _serve(args) -> None:
     from unistack import UniStack
+
+    from unistack_runtime import entity
     from unistack_runtime.server import AuthConfig, create_app
     import uvicorn
 
@@ -153,6 +155,12 @@ def _serve(args) -> None:
            if os.environ.get("UNISTACK_GUARDRAIL_MODEL") else {}),
     )
     graph = sdk.compile(builder, guards=guards, reviews=reviews)
+    # Validated at boot, so a malformed template is a refused start rather than a
+    # silent gap discovered when someone asks why a KRA has no denominator.
+    try:
+        entity_key_template = entity.validate(config.get('entity_key'))
+    except entity.EntityKeyError as exc:
+        sys.exit(f'[UniStack] {exc}')
 
     # flush=True: stdout is block-buffered when piped to a container log, and an auth
     # warning nobody sees until shutdown is worthless.
@@ -161,12 +169,20 @@ def _serve(args) -> None:
                  f"auth=token (LOCAL DEV ONLY — identity is NOT verified; every resolution "
                  f"is attributed to '{auth.identity}') scopes={sorted(auth.token_scopes)}")
     kb_line = f" knowledge={sorted(knowledge_bases)}" if knowledge_bases else ""
+    # Printed because its ABSENCE is the interesting case: no entity_key means every
+    # cross-activity metric silently has no denominator, and that should be visible at boot
+    # rather than discovered from an empty dashboard.
+    ek_line = (f" entity_key={entity_key_template!r}" if entity_key_template
+               else " entity_key=NONE (cross-activity metrics unavailable)")
     print(f"[UniStack] serving '{workflow}' from {args.builder} (guards={list(guards)}, "
-          f"reviews={reviews}{kb_line}) on {args.host}:{args.port}\n[UniStack] {auth_line}",
+          f"reviews={reviews}{kb_line}{ek_line}) on {args.host}:{args.port}"
+          f"\n[UniStack] {auth_line}",
           flush=True)
 
     try:
-        uvicorn.run(create_app(sdk, graph, auth=auth), host=args.host, port=args.port)
+        uvicorn.run(create_app(sdk, graph, auth=auth,
+                               entity_key_template=entity_key_template),
+                    host=args.host, port=args.port)
     finally:
         # Span flushing happens in create_app's lifespan shutdown hook, NOT here: on SIGTERM
         # uvicorn exits without returning, so this block never runs. Kept for the non-signal

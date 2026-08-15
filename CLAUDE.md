@@ -76,6 +76,28 @@ knowledge-base guard would silently downgrade that guard to one sentence — a g
 looks configured. The merge **refuses** in that case instead of overwriting. Overriding a plain
 string guard with another string is unchanged.
 
+### `entity_key` — what each run is about
+
+`UNISTACK_CONFIG` may declare a template, rendered against each request's `initial_state` and
+written to the durable activity record at start:
+
+```python
+"entity_key": "${state.alarm.site_id}:${state.alarm.alarm_class}"
+```
+
+It is the join key every cross-activity KRA needs (BUILD_PLAN item 7). Three properties, all
+load-bearing:
+
+- **All-or-nothing.** If any referenced field is missing the key is `None`, not half-rendered.
+  `"network:MUM-042:"` is not a partial key — it is a *different* key that every activity missing
+  `alarm_class` would share, merging unrelated faults into one entity.
+- **Validated at boot**, so a typo is a refused start rather than a silent gap discovered when
+  someone asks why a KRA has no denominator. A template with no `${state...}` placeholder is
+  refused outright: it would give every activity one key.
+- **Absent is legal.** An agent whose entity is only known after diagnosis cannot produce one at
+  start. That is a real gap, recorded as absence — the boot banner prints
+  `entity_key=NONE (cross-activity metrics unavailable)` so it is visible rather than discovered.
+
 ## Environment variables
 
 | Var | Purpose |
